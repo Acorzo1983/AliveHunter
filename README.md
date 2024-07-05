@@ -72,7 +72,7 @@ Suppose you have a file `domains.txt` with a list of URLs and a file `proxy.txt`
 go run AliveHunter.go -l domains.txt -p proxy.txt
 ```
 
-The result will be saved in a file called `url_alive.txt`.
+The result will be saved in a file called `domains_alive.txt`.
 
 ## Contributing
 
