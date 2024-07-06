@@ -15,7 +15,7 @@ AliveHunter is a tool for checking the availability of URLs using HTTP/HTTPS, wi
 1. **Clone the repository**:
 
     ```bash
-    git clone https://github.com/Acorzo1983/AliveHunter.git
+    git clone https://github.com/yourusername/AliveHunter.git
     cd AliveHunter
     ```
 
@@ -28,14 +28,7 @@ AliveHunter is a tool for checking the availability of URLs using HTTP/HTTPS, wi
 3. **Install dependencies**:
 
     ```bash
-    go get github.com/fatih/color
-    go get github.com/schollz/progressbar/v3
-    ```
-
-4. **Run `go mod tidy`**:
-
-    ```bash
-    go mod tidy
+    ./installer.sh
     ```
 
 ## Usage
@@ -45,7 +38,7 @@ AliveHunter is a tool for checking the availability of URLs using HTTP/HTTPS, wi
 To run the script specifying the input file and the proxy file (optional):
 
 ```bash
-go run AliveHunter.go -l domains.txt -p proxy.txt
+go run AliveHunter.go -l url.txt -p proxy.txt
 ```
 
 ### Viewing help
@@ -61,18 +54,18 @@ go run AliveHunter.go -h
 To run the script with `proxychains`:
 
 ```bash
-proxychains go run AliveHunter.go -l domains.txt
+proxychains go run AliveHunter.go -l url.txt
 ```
 
-## Example
+## Examples
 
-Suppose you have a file `domains.txt` with a list of URLs and a file `proxy.txt` with a list of proxies.
+Suppose you have a file `url.txt` with a list of URLs and a file `proxy.txt` with a list of proxies.
 
 ```bash
-go run AliveHunter.go -l domains.txt -p proxy.txt
+go run AliveHunter.go -l url.txt -p proxy.txt
 ```
 
-The result will be saved in a file called `domains_alive.txt`.
+The result will be saved in a file called `url_alive.txt`.
 
 ## Contributing
 
