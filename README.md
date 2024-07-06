@@ -1,4 +1,3 @@
-
 # AliveHunter v0.9
 
 AliveHunter is a tool for checking the availability of URLs using HTTP/HTTPS, with support for proxies and `proxychains` for distributed scanning. Save results efficiently and track progress interactively.
@@ -19,17 +18,16 @@ AliveHunter is a tool for checking the availability of URLs using HTTP/HTTPS, wi
     cd AliveHunter
     ```
 
-2. **Initialize the Go module**:
-
-    ```bash
-    go mod init AliveHunter
-    ```
-
-3. **Install dependencies**:
+2. **Run the installer script**:
 
     ```bash
     ./installer.sh
     ```
+
+The installer script will:
+- Install Go if it is not already installed.
+- Initialize the Go module.
+- Install necessary dependencies.
 
 ## Usage
 
