@@ -1,69 +1,56 @@
-# AliveHunter v0.9
 
-AliveHunter is a tool for checking the availability of URLs using HTTP/HTTPS, with support for proxies and `proxychains` for distributed scanning. Save results efficiently and track progress interactively.
+# AliveHunter v1.0
 
-## Features
-
-- Checks the availability of URLs using HTTP and HTTPS.
-- Supports proxies specified in a file.
-- Interactive progress bar.
-- Option to use `proxychains` for multi-node proxying.
-
-## Installation
-
-1. **Clone the repository**:
-
-    ```bash
-    git clone https://github.com/yourusername/AliveHunter.git
-    cd AliveHunter
-    ```
-
-2. **Run the installer script**:
-
-    ```bash
-    ./installer.sh
-    ```
-
-The installer script will:
-- Install Go if it is not already installed.
-- Initialize the Go module.
-- Install necessary dependencies.
+AliveHunter is a tool for checking the availability of a list of URLs. Developed with love by Albert.C.
 
 ## Usage
 
-### Running the script
-
-To run the script specifying the input file and the proxy file (optional):
-
-```bash
-go run AliveHunter.go -l url.txt -p proxy.txt
+```
+go run AliveHunter.go -l subdomainlist.txt [-o output.txt] [-p proxylist.txt] [-r retries] [-t timeout] [-b maxBlocks] [-c concurrency] [--https]
 ```
 
-### Viewing help
+### Options
 
-To view help:
+- `-l string`: File containing URLs to check (use `-` to read from stdin) (required).
+- `-o string`: Output file to save the results (optional, default is `<input_file>_alive.txt`).
+- `-p string`: File containing proxy list (optional).
+- `-r int`: Number of retries for failed requests (default 2).
+- `-t int`: Timeout for HTTP requests in seconds (default 5).
+- `-b int`: Maximum number of blocks to divide (default 1000).
+- `-c int`: Number of concurrent workers (default 10).
+- `--https`: Check only HTTPS URLs.
+- `-h`: Show help message.
 
-```bash
-go run AliveHunter.go -h
-```
-
-### Using `proxychains`
-
-To run the script with `proxychains`:
-
-```bash
-proxychains go run AliveHunter.go -l url.txt
-```
-
-## Examples
-
-Suppose you have a file `url.txt` with a list of URLs and a file `proxy.txt` with a list of proxies.
+### Examples
 
 ```bash
-go run AliveHunter.go -l url.txt -p proxy.txt
+subfinder -d example.com --silent -o subdomainlist.txt && go run AliveHunter.go -l subdomainlist.txt -o alive_subdomains.txt
+subfinder -d example.com --silent | go run AliveHunter.go -l - -o alive_subdomains.txt
+go run AliveHunter.go -l subdomainlist.txt
+go run AliveHunter.go -l subdomainlist.txt -o alive_subdomains.txt
+go run AliveHunter.go -l subdomainlist.txt -p proxylist.txt
+go run AliveHunter.go -l subdomainlist.txt -r 5
+go run AliveHunter.go -l subdomainlist.txt -t 15
+go run AliveHunter.go -l subdomainlist.txt -b 100
+go run AliveHunter.go -l subdomainlist.txt --https
 ```
 
-The result will be saved in a file called `url_alive.txt`.
+### Installing Dependencies
+
+Make sure to install the necessary dependencies with:
+
+```bash
+go get github.com/fatih/color
+go get github.com/schollz/progressbar/v3
+```
+
+### Using proxychains
+
+You can also use proxychains for multi-node proxying:
+
+```bash
+proxychains go run AliveHunter.go -l subdomainlist.txt
+```
 
 ## Contributing
 
