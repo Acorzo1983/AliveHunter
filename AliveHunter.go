@@ -136,7 +136,7 @@ func checkURL(ctx context.Context, url string, client *http.Client, retries int,
 	return "", false
 }
 
-func processBlock(ctx context.Context, block []string, clients []*http.Client, retries int, httpsOnly bool, bar *progressbar.ProgressBar, writer *bufio.Writer, totalProcessed *uint64, liveCount *uint64, sem chan struct{}, wg *sync.WaitGroup, logger *log.Logger) {
+func processBlock(ctx context.Context, block []string, clients []*http.Client, retries int, httpsOnly bool, bar *progressbar.ProgressBar, writer *bufio.Writer, totalProcessed *uint64, liveCount *uint64, logger *log.Logger, wg *sync.WaitGroup, sem chan struct{}) {
 	defer wg.Done()
 	defer func() { <-sem }() // Release the token
 
@@ -162,8 +162,10 @@ func processBlock(ctx context.Context, block []string, clients []*http.Client, r
 }
 
 func main() {
+	startTime := time.Now()
 	fmt.Println("AliveHunter v1.0")
 	color.New(color.FgHiYellow).Println("Made with love by Albert.C")
+	fmt.Printf("Script started at: %s\n", startTime.Format("2006-01-02 15:04:05"))
 
 	inputFile := flag.String("l", "", "File containing URLs to check (use '-' to read from stdin)")
 	outputFile := flag.String("o", "", "Output file to save the results (optional)")
@@ -306,13 +308,27 @@ func main() {
 		wg.Add(1)
 		go func(block []string) {
 			defer wg.Done()
-			processBlock(ctx, block, clients, *retries, *httpsOnly, bar, writer, &totalProcessed, &liveCount, sem, &wg, logger)
+			processBlock(ctx, block, clients, *retries, *httpsOnly, bar, writer, &totalProcessed, &liveCount, logger, &wg, sem)
 		}(block)
 	}
 
-	wg.Wait()
+	// Wait for all goroutines to finish
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
 
+	select {
+	case <-done:
+	case <-ctx.Done():
+		fmt.Println("\nProcess interrupted")
+	}
+
+	endTime := time.Now()
 	fmt.Printf("\nTotal URLs processed: %d\n", totalProcessed)
 	fmt.Printf("Live URLs found: %d\n", liveCount)
 	fmt.Printf("Live URLs have been written to %s\n", outFileName)
+	fmt.Printf("Script finished at: %s\n", endTime.Format("2006-01-02 15:04:05"))
+	fmt.Printf("Total execution time: %s\n", endTime.Sub(startTime))
 }
