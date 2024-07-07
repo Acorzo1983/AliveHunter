@@ -136,8 +136,10 @@ func checkURL(ctx context.Context, url string, client *http.Client, retries int,
 	return "", false
 }
 
-func processBlock(ctx context.Context, block []string, clients []*http.Client, retries int, httpsOnly bool, bar *progressbar.ProgressBar, writer *bufio.Writer, totalProcessed *uint64, liveCount *uint64, wg *sync.WaitGroup, logger *log.Logger) {
+func processBlock(ctx context.Context, block []string, clients []*http.Client, retries int, httpsOnly bool, bar *progressbar.ProgressBar, writer *bufio.Writer, totalProcessed *uint64, liveCount *uint64, sem chan struct{}, wg *sync.WaitGroup, logger *log.Logger) {
 	defer wg.Done()
+	defer func() { <-sem }() // Release the token
+
 	for _, url := range block {
 		select {
 		case <-ctx.Done():
@@ -304,8 +306,7 @@ func main() {
 		wg.Add(1)
 		go func(block []string) {
 			defer wg.Done()
-			defer func() { <-sem }()
-			processBlock(ctx, block, clients, *retries, *httpsOnly, bar, writer, &totalProcessed, &liveCount, &wg, logger)
+			processBlock(ctx, block, clients, *retries, *httpsOnly, bar, writer, &totalProcessed, &liveCount, sem, &wg, logger)
 		}(block)
 	}
 
