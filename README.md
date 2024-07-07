@@ -1,111 +1,112 @@
+
 # AliveHunter
 
-AliveHunter es una herramienta escrita en Go para comprobar si las URLs están vivas (responden con un estado HTTP 200 OK). Está diseñado para trabajar con listas de subdominios y admite el uso de proxies para distribuir las solicitudes.
+AliveHunter is a tool written in Go to check if URLs are alive (respond with HTTP 200 OK). It is designed to work with subdomain lists and supports the use of proxies to distribute requests.
 
-## Características
+## Features
 
-- Verificación de URLs en bloques para mejorar la eficiencia.
-- Admite múltiples reintentos y tiempo de espera configurable.
-- Admite proxies para distribuir la carga de las solicitudes.
-- Registro de errores detallado en `error_log.txt`.
-- Barra de progreso para visualizar el estado del proceso.
+- URL verification in blocks for improved efficiency.
+- Supports multiple retries and configurable timeout.
+- Supports proxies to distribute the load of requests.
+- Detailed error logging in `error_log.txt`.
+- Progress bar to visualize the status of the process.
 
-## Requisitos
+## Requirements
 
-- Go 1.16 o superior
-- Las siguientes bibliotecas de Go:
+- Go 1.16 or higher
+- The following Go libraries:
   - `github.com/fatih/color`
   - `github.com/schollz/progressbar/v3`
 
-Para instalar las dependencias, ejecuta:
+To install the dependencies, run:
 
 ```sh
 go get github.com/fatih/color
 go get github.com/schollz/progressbar/v3
 ```
 
-## Instalación
+## Installation
 
-Para instalar `AliveHunter`, descarga el archivo `installer.sh`, hazlo ejecutable y ejecútalo:
+To install `AliveHunter`, download the `installer.sh` file, make it executable, and run it:
 
 ```sh
 chmod +x installer.sh
 ./installer.sh
 ```
 
-## Uso
+## Usage
 
-### Ejemplos de Uso
+### Usage Examples
 
-1. **Uso básico**:
+1. **Basic Usage**:
 
 ```sh
 go run AliveHunter.go -l subdomainlist.txt
 ```
 
-2. **Guardar los resultados en un archivo específico**:
+2. **Save results to a specific file**:
 
 ```sh
 go run AliveHunter.go -l subdomainlist.txt -o alive_subdomains.txt
 ```
 
-3. **Uso con una lista de proxies**:
+3. **Use with a list of proxies**:
 
 ```sh
 go run AliveHunter.go -l subdomainlist.txt -p proxylist.txt
 ```
 
-4. **Configurar el número de reintentos y el tiempo de espera**:
+4. **Configure the number of retries and timeout**:
 
 ```sh
 go run AliveHunter.go -l subdomainlist.txt -r 5 -t 15
 ```
 
-5. **Dividir las URLs en un número máximo de bloques**:
+5. **Divide URLs into a maximum number of blocks**:
 
 ```sh
 go run AliveHunter.go -l subdomainlist.txt -b 100
 ```
 
-6. **Comprobar solo URLs HTTPS**:
+6. **Check only HTTPS URLs**:
 
 ```sh
 go run AliveHunter.go -l subdomainlist.txt --https
 ```
 
-### Ejemplo Completo con Subfinder
+### Complete Example with Subfinder
 
-Para usar `AliveHunter` junto con `subfinder`:
+To use `AliveHunter` together with `subfinder`:
 
-1. Genera el archivo de subdominios con `subfinder`:
+1. Generate the subdomains file with `subfinder`:
 
 ```sh
 subfinder -d example.com --silent -o subdomainlist.txt
 ```
 
-2. Ejecuta `AliveHunter` con el archivo generado:
+2. Run `AliveHunter` with the generated file:
 
 ```sh
 go run AliveHunter.go -l subdomainlist.txt -o alive_subdomains.txt
 ```
 
-### Uso de Proxychains
+### Use of Proxychains
 
-Para usar `proxychains` para multiproxying:
+To use `proxychains` for multiproxying:
 
 ```sh
 proxychains go run AliveHunter.go -l subdomainlist.txt
 ```
 
-### Ayuda
+### Help
 
-Para mostrar el mensaje de ayuda:
+To display the help message:
 
 ```sh
 go run AliveHunter.go -h
 ```
 
-## Opciones
+## Options
 
 ```
 -l string
@@ -125,4 +126,4 @@ go run AliveHunter.go -h
 -h    Show help message
 ```
 
-## Hecho con ❤️ por Albert.C
+## Made with ❤️ by Albert.C
