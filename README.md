@@ -1,4 +1,3 @@
-
 # AliveHunter v1.0
 
 AliveHunter is a tool for checking the availability of a list of URLs. Developed with love by Albert.C.
@@ -42,6 +41,13 @@ Make sure to install the necessary dependencies with:
 ```bash
 go get github.com/fatih/color
 go get github.com/schollz/progressbar/v3
+```
+
+Or use the provided installer script:
+
+```bash
+chmod +x installer.sh
+./installer.sh
 ```
 
 ### Using proxychains
