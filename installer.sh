@@ -32,7 +32,13 @@ go mod tidy
 echo "Compiling AliveHunter..."
 go build -o alivehunter AliveHunter.go
 
-echo "Installation complete. You can now run AliveHunter using the following command:"
-echo "go run AliveHunter.go -l <input_file> -o <output_file>"
-echo "Or, if you compiled it: ./alivehunter -l <input_file> -o <output_file>"
-echo "Thanks Albert.C"
+# Move the binary to a directory in the PATH or create a symlink
+if [ -f alivehunter ]; then
+    sudo mv alivehunter /usr/local/bin/alivehunter
+    echo "AliveHunter has been installed globally as 'alivehunter'."
+else
+    echo "Compilation failed. The binary was not created."
+    exit 1
+fi
+
+echo "Installation complete. Thanks for installing! Please visit my other hunting tools at: https://github.com/Acorzo1983"
