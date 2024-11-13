@@ -6,12 +6,18 @@ set -e  # Exit on any error
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
 NC='\033[0m' # No Color
+
+VERSION="1.4"
 
 # Print banner
 echo -e "${GREEN}"
-echo "AliveHunter Installer v1.0"
-echo "Created by Albert.C"
+echo "╔═══════════════════════════════╗"
+echo "║     AliveHunter Installer     ║"
+echo "║          Version $VERSION         ║"
+echo "║     Created by Albert.C       ║"
+echo "╚═══════════════════════════════╝"
 echo -e "${NC}"
 
 # Function to print status messages
@@ -34,11 +40,32 @@ command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
+# Check for previous installation
+check_previous_installation() {
+    if [ -d "$HOME/.alivehunter" ] || [ -f "/usr/local/bin/alivehunter" ]; then
+        print_status "Previous installation detected"
+        read -p "Would you like to remove it and install the new version? (y/n) " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            print_status "Removing previous installation..."
+            sudo rm -rf "$HOME/.alivehunter" 2>/dev/null || true
+            sudo rm -f "/usr/local/bin/alivehunter" 2>/dev/null || true
+            print_success "Previous installation removed"
+        else
+            print_error "Installation cancelled"
+            exit 1
+        fi
+    fi
+}
+
 # Check for root privileges
 if [ "$EUID" -eq 0 ]; then 
     print_error "Please do not run this script as root"
     exit 1
 fi
+
+# Check for previous installation
+check_previous_installation
 
 # Ensure Go is installed
 if ! command_exists go; then
@@ -47,68 +74,68 @@ if ! command_exists go; then
     exit 1
 fi
 
-# Check Go version
-GO_VERSION=$(go version | awk '{print $3}' | sed 's/go//')
-MIN_VERSION="1.16"
-if [ "$(printf '%s\n' "$MIN_VERSION" "$GO_VERSION" | sort -V | head -n1)" != "$MIN_VERSION" ]; then
-    print_error "Go version $GO_VERSION is too old. Please upgrade to at least version $MIN_VERSION"
-    exit 1
-fi
-
 # Create installation directory
 INSTALL_DIR="$HOME/.alivehunter"
 mkdir -p "$INSTALL_DIR"
 print_status "Created installation directory: $INSTALL_DIR"
 
-# Initialize Go module
-cd "$INSTALL_DIR"
-if [ ! -f go.mod ]; then
-    print_status "Initializing Go module..."
-    go mod init alivehunter
-    print_success "Go module initialized"
-fi
-
 # Copy source files
 print_status "Copying source files..."
-cp "$PWD/AliveHunter.go" "$INSTALL_DIR/"
-print_success "Source files copied"
+if [ -f "AliveHunter.go" ]; then
+    cp AliveHunter.go "$INSTALL_DIR/"
+    print_success "Source files copied"
+else
+    print_error "AliveHunter.go not found in current directory"
+    exit 1
+fi
+
+# Initialize Go module
+cd "$INSTALL_DIR"
+print_status "Initializing Go module..."
+cat > go.mod << EOL
+module alivehunter
+
+go 1.21
+
+require (
+    github.com/fatih/color v1.18.0
+    github.com/schollz/progressbar/v3 v3.17.1
+    golang.org/x/time v0.8.0
+)
+EOL
+print_success "Go module initialized"
 
 # Download and install dependencies
 print_status "Installing dependencies..."
-go get github.com/fatih/color
-go get github.com/schollz/progressbar/v3
-go get golang.org/x/time/rate
 go mod tidy
 print_success "Dependencies installed"
 
 # Build the binary
 print_status "Building AliveHunter..."
-go build -o alivehunter AliveHunter.go
-print_success "Build completed"
-
-# Create bin directory if it doesn't exist
-mkdir -p "$HOME/.local/bin"
-
-# Add ~/.local/bin to PATH if not already present
-if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
-    echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.bashrc"
-    echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.zshrc" 2>/dev/null || true
-    print_status "Added ~/.local/bin to PATH"
-fi
+CGO_ENABLED=0 go build -o alivehunter -ldflags="-s -w" AliveHunter.go
 
 # Install the binary
 if [ -f alivehunter ]; then
-    mv alivehunter "$HOME/.local/bin/"
-    chmod +x "$HOME/.local/bin/alivehunter"
-    print_success "AliveHunter installed successfully!"
+    sudo mv alivehunter /usr/local/bin/
+    sudo chmod +x /usr/local/bin/alivehunter
+    print_success "Installation completed successfully!"
     echo
-    echo -e "${GREEN}Usage:${NC}"
-    echo "  alivehunter -l domains.txt               # Basic usage"
-    echo "  alivehunter -l domains.txt -p proxy.txt  # With proxies"
-    echo "  alivehunter -h                           # Show help"
+    echo -e "${GREEN}╔═══════════════════════════════════════════╗"
+    echo -e "║       AliveHunter is ready to use! 🎉        ║"
+    echo -e "╚═══════════════════════════════════════════╝${NC}"
     echo
-    echo -e "${YELLOW}Note:${NC} You may need to restart your terminal or run 'source ~/.bashrc'"
-    echo "      for the command to be available."
+    echo -e "${BLUE}Usage Examples:${NC}"
+    echo "  alivehunter -l urls.txt                    # Basic scan"
+    echo "  alivehunter -l urls.txt -o results.txt     # Custom output"
+    echo "  alivehunter -l urls.txt -w 20              # 20 workers"
+    echo "  alivehunter -l urls.txt -rate 50           # 50 requests/sec"
+    echo "  alivehunter -l urls.txt -p proxies.txt     # Use proxies"
+    echo "  alivehunter -l urls.txt --https            # HTTPS only"
+    echo
+    echo -e "${BLUE}Version:${NC} AliveHunter v$VERSION"
+    echo -e "${BLUE}Location:${NC} /usr/local/bin/alivehunter"
+    echo
+    echo -e "${GREEN}Happy hunting! 🎯${NC}"
 else
     print_error "Build failed. Please check the error messages above."
     exit 1
