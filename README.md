@@ -27,11 +27,11 @@ go get github.com/schollz/progressbar/v3
 
 ## Installation
 
-To install `AliveHunter`, download the `installer.sh` file, make it executable, and run it:
+To install `AliveHunter`, download the `install.sh` file, make it executable, and run it:
 
 ### OneLiner
 ```sh
-git clone https://github.com/Acorzo1983/AliveHunter.git && cd AliveHunter && chmod +x installer.sh && ./installer.sh
+git clone https://github.com/Acorzo1983/AliveHunter.git && cd AliveHunter && chmod +x install.sh && ./install.sh
 ```
 ### Manual Install
 ```sh
@@ -41,10 +41,10 @@ git clone https://github.com/Acorzo1983/AliveHunter.git
 cd AliveHunter
 ```
 ```sh
-chmod +x installer.sh
+chmod +x install.sh
 ```
 ```sh
-./installer.sh
+./install.sh
 ```
 
 ## Usage
