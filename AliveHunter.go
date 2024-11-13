@@ -20,9 +20,14 @@ import (
 
 	"github.com/fatih/color"
 	"github.com/schollz/progressbar/v3"
+	"golang.org/x/time/rate"
 )
 
-// Function to read URLs from a file and return the total count and slice of URLs
+type Result struct {
+	URL   string
+	Alive bool
+}
+
 func readURLsFromFile(filePath string) ([]string, int, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
@@ -36,21 +41,22 @@ func readURLsFromFile(filePath string) ([]string, int, error) {
 	for scanner.Scan() {
 		url := strings.TrimSpace(scanner.Text())
 		if url != "" {
+			// Remove any protocol prefix if present
+			url = strings.TrimPrefix(strings.TrimPrefix(url, "http://"), "https://")
 			urls = append(urls, url)
 			count++
 		}
 	}
-	if err := scanner.Err(); err != nil {
-		return nil, 0, err
-	}
-
-	return urls, count, nil
+	return urls, count, scanner.Err()
 }
 
-// Function to divide URLs into blocks dynamically
 func divideIntoBlocks(urls []string, numBlocks int) [][]string {
-	var blocks [][]string
-	blockSize := len(urls) / numBlocks
+	if numBlocks <= 0 {
+		numBlocks = 1
+	}
+	blockSize := (len(urls) + numBlocks - 1) / numBlocks // Round up division
+	blocks := make([][]string, 0, numBlocks)
+	
 	for i := 0; i < len(urls); i += blockSize {
 		end := i + blockSize
 		if end > len(urls) {
@@ -61,7 +67,6 @@ func divideIntoBlocks(urls []string, numBlocks int) [][]string {
 	return blocks
 }
 
-// Function to read proxies from a file
 func readProxiesFromFile(filePath string) ([]string, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
@@ -77,81 +82,67 @@ func readProxiesFromFile(filePath string) ([]string, error) {
 			proxies = append(proxies, proxy)
 		}
 	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
-
-	return proxies, nil
+	return proxies, scanner.Err()
 }
 
-// Function to create an HTTP client with proxy
 func createClientWithProxy(proxyURL string) (*http.Client, error) {
 	proxy, err := url.Parse(proxyURL)
 	if err != nil {
 		return nil, err
 	}
+	
 	transport := &http.Transport{
-		Proxy: http.ProxyURL(proxy),
+		Proxy:               http.ProxyURL(proxy),
+		DisableKeepAlives:  true,
+		MaxIdleConns:       100,
+		IdleConnTimeout:    90 * time.Second,
+		DisableCompression: true,
 	}
-	client := &http.Client{
+	
+	return &http.Client{
 		Transport: transport,
-		Timeout:   15 * time.Second, // Increased timeout for slow servers
-	}
-	return client, nil
+		Timeout:   15 * time.Second,
+	}, nil
 }
 
-// Function to check if URL returns HTTP 200 OK for both http and https
-func checkURL(ctx context.Context, url string, client *http.Client, retries int, httpsOnly bool, logger *log.Logger) (string, bool) {
-	for i := 0; i <= retries; i++ {
-		if !httpsOnly {
-			httpURL := "http://" + url
-			req, err := http.NewRequestWithContext(ctx, "GET", httpURL, nil)
-			if err == nil {
-				resp, err := client.Do(req)
-				if err == nil && resp.StatusCode == http.StatusOK {
-					defer resp.Body.Close()
-					return httpURL, true
-				}
-				if err != nil {
-					logger.Printf("Error checking %s: %v\n", httpURL, err)
-				}
-			}
-		}
-
-		httpsURL := "https://" + url
-		req, err := http.NewRequestWithContext(ctx, "GET", httpsURL, nil)
-		if err == nil {
-			resp, err := client.Do(req)
-			if err == nil && resp.StatusCode == http.StatusOK {
-				defer resp.Body.Close()
-				return httpsURL, true
-			}
-			if err != nil {
-				logger.Printf("Error checking %s: %v\n", httpsURL, err)
-			}
-		}
-
-		time.Sleep(3 * time.Second) // Increased sleep time between retries
+func checkURL(ctx context.Context, baseURL string, client *http.Client, limiter *rate.Limiter) (string, bool) {
+	if err := limiter.Wait(ctx); err != nil {
+		return "", false
 	}
+
+	protocols := []string{"https://", "http://"}
+	for _, protocol := range protocols {
+		fullURL := protocol + baseURL
+		req, err := http.NewRequestWithContext(ctx, "GET", fullURL, nil)
+		if err != nil {
+			continue
+		}
+
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+		
+		resp, err := client.Do(req)
+		if err != nil {
+			continue
+		}
+		
+		defer resp.Body.Close()
+		
+		if resp.StatusCode == http.StatusOK {
+			return fullURL, true
+		}
+	}
+	
 	return "", false
 }
 
-func processBlock(ctx context.Context, block []string, clients []*http.Client, retries int, httpsOnly bool, bar *progressbar.ProgressBar, writer *bufio.Writer, totalProcessed *uint64, liveCount *uint64, wg *sync.WaitGroup, logger *log.Logger) {
-	defer wg.Done()
-	for _, url := range block {
+func processURLs(ctx context.Context, urls []string, results chan<- Result, client *http.Client, limiter *rate.Limiter, bar *progressbar.ProgressBar) {
+	for _, u := range urls {
 		select {
 		case <-ctx.Done():
 			return
 		default:
-			client := clients[rand.Intn(len(clients))]
-			fullURL, alive := checkURL(ctx, url, client, retries, httpsOnly, logger)
-			if alive {
-				writer.WriteString(fullURL + "\n")
-				writer.Flush()
-				atomic.AddUint64(liveCount, 1)
-			}
-			currentProcessed := atomic.AddUint64(totalProcessed, 1)
-			bar.Describe(fmt.Sprintf("Checking URLs... (%d), Found alive: %d", currentProcessed, atomic.LoadUint64(liveCount)))
+			fullURL, alive := checkURL(ctx, u, client, limiter)
+			results <- Result{URL: fullURL, Alive: alive}
 			bar.Add(1)
 		}
 	}
@@ -159,78 +150,35 @@ func processBlock(ctx context.Context, block []string, clients []*http.Client, r
 
 func main() {
 	startTime := time.Now()
-	fmt.Println("AliveHunter v1.0")
+	color.New(color.FgHiCyan).Println("AliveHunter v1.1")
 	color.New(color.FgHiYellow).Println("Made with love by Albert.C")
-	fmt.Printf("Script started at: %s\n", startTime.Format("2006-01-02 15:04:05"))
 
+	// Command line flags
 	inputFile := flag.String("l", "", "File containing URLs to check (required)")
-	outputFile := flag.String("o", "", "Output file to save the results (optional)")
+	outputFile := flag.String("o", "", "Output file for results (optional)")
 	proxyFile := flag.String("p", "", "File containing proxy list (optional)")
-	retries := flag.Int("r", 5, "Number of retries for failed requests") // Increased retries
-	timeout := flag.Int("t", 15, "Timeout for HTTP requests in seconds") // Increased timeout
-	maxBlocks := flag.Int("b", 1000, "Maximum number of blocks to divide")
-	httpsOnly := flag.Bool("https", false, "Check only HTTPS URLs")
+	rateLimit := flag.Float64("rate", 10, "Requests per second")
+	workers := flag.Int("w", 10, "Number of concurrent workers")
 	help := flag.Bool("h", false, "Show help message")
 	flag.Parse()
 
 	if *help {
-		fmt.Println("Usage: go run AliveHunter.go -l subdomainlist.txt [-o output.txt] [-p proxylist.txt] [-r retries] [-t timeout] [-b maxBlocks] [--https]")
-		fmt.Println("\nOptions:")
-		fmt.Println("  -l string")
-		fmt.Println("        File containing URLs to check (required)")
-		fmt.Println("  -o string")
-		fmt.Println("        Output file to save the results (optional, default is <input_file>_alive.txt)")
-		fmt.Println("  -p string")
-		fmt.Println("        File containing proxy list (optional)")
-		fmt.Println("  -r int")
-		fmt.Println("        Number of retries for failed requests (default 5)")
-		fmt.Println("  -t int")
-		fmt.Println("        Timeout for HTTP requests in seconds (default 15)")
-		fmt.Println("  -b int")
-		fmt.Println("        Maximum number of blocks to divide (default 1000)")
-		fmt.Println("  --https")
-		fmt.Println("        Check only HTTPS URLs")
-		fmt.Println("  -h    Show help message")
-		fmt.Println("\nExamples:")
-		fmt.Println("  subfinder -d example.com --silent -o subdomainlist.txt && go run AliveHunter.go -l subdomainlist.txt -o alive_subdomains.txt")
-		fmt.Println("  subfinder -d example.com --silent -o subdomainlist.txt && go run AliveHunter.go -l subdomainlist.txt")
-		fmt.Println("  go run AliveHunter.go -l subdomainlist.txt")
-		fmt.Println("  go run AliveHunter.go -l subdomainlist.txt -o alive_subdomains.txt")
-		fmt.Println("  go run AliveHunter.go -l subdomainlist.txt -p proxylist.txt")
-		fmt.Println("  go run AliveHunter.go -l subdomainlist.txt -r 5")
-		fmt.Println("  go run AliveHunter.go -l subdomainlist.txt -t 15")
-		fmt.Println("  go run AliveHunter.go -l subdomainlist.txt -b 100")
-		fmt.Println("  go run AliveHunter.go -l subdomainlist.txt --https")
-		fmt.Println("\nMake sure to install the necessary dependencies with:")
-		fmt.Println("  go get github.com/fatih/color")
-		fmt.Println("  go get github.com/schollz/progressbar/v3")
-		fmt.Println("\nYou can also use proxychains for multi-node proxying:")
-		fmt.Println("  proxychains go run AliveHunter.go -l subdomainlist.txt")
+		printHelp()
 		return
 	}
 
 	if *inputFile == "" {
-		fmt.Println("Please specify the input file using the -l flag. Use -h for help.")
+		fmt.Println("Error: Input file is required. Use -h for help.")
 		return
 	}
 
-	var proxies []string
-	var err error
-	if *proxyFile != "" {
-		proxies, err = readProxiesFromFile(*proxyFile)
-		if err != nil {
-			fmt.Printf("Error reading proxies from file: %v\n", err)
-			return
-		}
-	}
-
+	// Setup output file
 	outFileName := *outputFile
 	if outFileName == "" {
 		outFileName = strings.TrimSuffix(*inputFile, filepath.Ext(*inputFile)) + "_alive.txt"
 	}
 
-	fmt.Printf("Saving the results to %s\n", outFileName)
-
+	// Read URLs
 	urls, totalURLs, err := readURLsFromFile(*inputFile)
 	if err != nil {
 		fmt.Printf("Error reading URLs: %v\n", err)
@@ -238,74 +186,123 @@ func main() {
 	}
 
 	if totalURLs == 0 {
-		fmt.Println("No URLs to process. Exiting.")
+		fmt.Println("No URLs found in input file.")
 		return
 	}
 
-	numBlocks := *maxBlocks
-	if totalURLs < *maxBlocks {
-		numBlocks = totalURLs
-	}
-
-	if numBlocks == 0 {
-		numBlocks = 1
-	}
-
-	blocks := divideIntoBlocks(urls, numBlocks)
-
-	var totalProcessed uint64
-	var liveCount uint64
-
-	file, err := os.Create(outFileName)
-	if err != nil {
-		fmt.Printf("Error creating output file: %v\n", err)
-		return
-	}
-	defer file.Close()
-	writer := bufio.NewWriter(file)
-
-	logFile, err := os.Create("error_log.txt")
-	if err != nil {
-		fmt.Printf("Error creating log file: %v\n", err)
-		return
-	}
-	defer logFile.Close()
-	logger := log.New(logFile, "ERROR: ", log.LstdFlags)
-
-	defaultClient := &http.Client{
-		Timeout: time.Duration(*timeout) * time.Second,
-	}
-	clients := []*http.Client{defaultClient}
-
-	for _, proxy := range proxies {
-		proxyClient, err := createClientWithProxy(proxy)
-		if err == nil {
-			clients = append(clients, proxyClient)
+	// Setup clients
+	var clients []*http.Client
+	if *proxyFile != "" {
+		proxies, err := readProxiesFromFile(*proxyFile)
+		if err != nil {
+			fmt.Printf("Error reading proxies: %v\n", err)
+			return
+		}
+		for _, proxy := range proxies {
+			if client, err := createClientWithProxy(proxy); err == nil {
+				clients = append(clients, client)
+			}
 		}
 	}
+	if len(clients) == 0 {
+		clients = append(clients, &http.Client{
+			Timeout: 15 * time.Second,
+			Transport: &http.Transport{
+				DisableKeepAlives: true,
+				MaxIdleConns:      100,
+				IdleConnTimeout:   90 * time.Second,
+			},
+		})
+	}
 
+	// Setup context with cancellation
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Handle OS signals
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigChan
+		cancel()
+	}()
+
+	// Setup progress bar
 	bar := progressbar.NewOptions(totalURLs,
 		progressbar.OptionSetDescription("Checking URLs..."),
 		progressbar.OptionShowCount(),
 		progressbar.OptionShowIts(),
-		progressbar.OptionSetPredictTime(false))
+		progressbar.OptionSetPredictTime(false),
+	)
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	// Setup rate limiter
+	limiter := rate.NewLimiter(rate.Limit(*rateLimit), 1)
 
+	// Create output file
+	outFile, err := os.Create(outFileName)
+	if err != nil {
+		fmt.Printf("Error creating output file: %v\n", err)
+		return
+	}
+	defer outFile.Close()
+
+	// Process URLs
+	results := make(chan Result, *workers)
 	var wg sync.WaitGroup
-	for _, block := range blocks {
-		time.Sleep(1 * time.Second)
+	blockSize := (totalURLs + *workers - 1) / *workers
+
+	// Start workers
+	for i := 0; i < totalURLs; i += blockSize {
+		end := i + blockSize
+		if end > totalURLs {
+			end = totalURLs
+		}
+
 		wg.Add(1)
-		go processBlock(ctx, block, clients, *retries, *httpsOnly, bar, writer, &totalProcessed, &liveCount, &wg, logger)
+		go func(urls []string) {
+			defer wg.Done()
+			client := clients[rand.Intn(len(clients))]
+			processURLs(ctx, urls, results, client, limiter, bar)
+		}(urls[i:end])
 	}
 
-	wg.Wait()
+	// Start result writer
+	var liveCount uint64
+	go func() {
+		writer := bufio.NewWriter(outFile)
+		defer writer.Flush()
 
-	endTime := time.Now()
-	fmt.Printf("\nTotal URLs processed: %d\n", totalProcessed)
-	fmt.Printf("Live URLs found: %d\n", liveCount)
-	fmt.Printf("Live URLs have been written to %s\n", outFileName)
-	fmt.Printf("Script finished at: %s\n", endTime.Format("2006-01-02 15:04:05"))
-	fmt.Printf("Total execution time: %s\n", endTime.Sub(startTime))
+		for result := range results {
+			if result.Alive {
+				atomic.AddUint64(&liveCount, 1)
+				writer.WriteString(result.URL + "\n")
+				writer.Flush()
+			}
+		}
+	}()
+
+	// Wait for completion
+	wg.Wait()
+	close(results)
+
+	// Print summary
+	fmt.Printf("\nTotal URLs processed: %d\n", totalURLs)
+	fmt.Printf("Live URLs found: %d\n", atomic.LoadUint64(&liveCount))
+	fmt.Printf("Results saved to: %s\n", outFileName)
+	fmt.Printf("Total execution time: %s\n", time.Since(startTime))
+}
+
+func printHelp() {
+	fmt.Println(`AliveHunter Usage:
+  -l string    Input file containing URLs (required)
+  -o string    Output file for results (default: inputfile_alive.txt)
+  -p string    Proxy list file (optional)
+  -rate float  Requests per second (default: 10)
+  -w int       Number of concurrent workers (default: 10)
+  -h           Show this help message
+
+Examples:
+  ./alivehunter -l domains.txt
+  ./alivehunter -l domains.txt -o results.txt -rate 20
+  ./alivehunter -l domains.txt -p proxies.txt -w 20`)
 }
