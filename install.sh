@@ -15,7 +15,7 @@ VERSION="1.4"
 echo -e "${GREEN}"
 echo "╔═══════════════════════════════╗"
 echo "║     AliveHunter Installer     ║"
-echo "║     Version $VERSION          ║"
+echo "║     Version $VERSION              ║"
 echo "║     Created by Albert.C       ║"
 echo "╚═══════════════════════════════╝"
 echo -e "${NC}"
@@ -121,7 +121,7 @@ if [ -f alivehunter ]; then
     print_success "Installation completed successfully!"
     echo
     echo -e "${GREEN}╔═══════════════════════════════════════════╗"
-    echo -e "║       AliveHunter is ready to use! 🎉        ║"
+    echo -e "║       AliveHunter is ready to use! 🎉    ║"
     echo -e "╚═══════════════════════════════════════════╝${NC}"
     echo
     echo -e "${BLUE}Usage Examples:${NC}"
