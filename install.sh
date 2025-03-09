@@ -92,21 +92,13 @@ fi
 # Initialize Go module
 cd "$INSTALL_DIR"
 print_status "Initializing Go module..."
-cat > go.mod << EOL
-module alivehunter
-
-go 1.21
-
-require (
-    github.com/fatih/color v1.18.0
-    github.com/schollz/progressbar/v3 v3.17.1
-    golang.org/x/time v0.8.0
-)
-EOL
+go mod init alivehunter
 print_success "Go module initialized"
 
 # Download and install dependencies
 print_status "Installing dependencies..."
+go get github.com/fatih/color
+go get golang.org/x/time/rate
 go mod tidy
 print_success "Dependencies installed"
 
