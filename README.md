@@ -54,37 +54,37 @@ chmod +x install.sh
 1. **Basic Usage**:
 
 ```sh
-go run AliveHunter.go -l subdomainlist.txt
+aliveHunter -l subdomainlist.txt
 ```
 
 2. **Save results to a specific file**:
 
 ```sh
-go run AliveHunter.go -l subdomainlist.txt -o alive_subdomains.txt
+aliveHunter -l subdomainlist.txt -o alive_subdomains.txt
 ```
 
 3. **Use with a list of proxies**:
 
 ```sh
-go run AliveHunter.go -l subdomainlist.txt -p proxylist.txt
+aliveHunter -l subdomainlist.txt -p proxylist.txt
 ```
 
 4. **Configure the number of retries and timeout**:
 
 ```sh
-go run AliveHunter.go -l subdomainlist.txt -r 5 -t 15
+aliveHunter -l subdomainlist.txt -r 5 -t 15
 ```
 
 5. **Divide URLs into a maximum number of blocks**:
 
 ```sh
-go run AliveHunter.go -l subdomainlist.txt -b 100
+aliveHunter -l subdomainlist.txt -b 100
 ```
 
 6. **Check only HTTPS URLs**:
 
 ```sh
-go run AliveHunter.go -l subdomainlist.txt --https
+aliveHunter -l subdomainlist.txt --https
 ```
 
 ### Complete Example with Subfinder
@@ -100,7 +100,7 @@ subfinder -d example.com --silent -o subdomainlist.txt
 2. Run `AliveHunter` with the generated file:
 
 ```sh
-go run AliveHunter.go -l subdomainlist.txt -o alive_subdomains.txt
+aliveHunter -l subdomainlist.txt -o alive_subdomains.txt
 ```
 
 ### Use of Proxychains
@@ -108,7 +108,7 @@ go run AliveHunter.go -l subdomainlist.txt -o alive_subdomains.txt
 To use `proxychains` for multiproxying:
 
 ```sh
-proxychains go run AliveHunter.go -l subdomainlist.txt
+proxychains aliveHunter -l subdomainlist.txt
 ```
 
 ### Help
@@ -116,7 +116,7 @@ proxychains go run AliveHunter.go -l subdomainlist.txt
 To display the help message:
 
 ```sh
-go run AliveHunter.go -h
+aliveHunter -h
 ```
 
 ## Options
