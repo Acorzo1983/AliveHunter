@@ -1,0 +1,27 @@
+# Binaries
+build/
+alivehunter
+alivehunter.exe
+*.exe
+
+# Go specific
+go.mod
+go.sum
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Temporary files
+*.tmp
+*.log
+
+# Test files
+test_domains.txt
+scope.txt
+results.txt
+
+# OS specific
+Thumbs.db
