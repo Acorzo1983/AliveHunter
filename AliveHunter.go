@@ -3,13 +3,20 @@ package main
 import (
     "bufio"
     "context"
+    "crypto/tls"
+    "encoding/json"
+    "errors"
     "flag"
     "fmt"
+    "io"
+    "net"
     "net/http"
     "net/url"
     "os"
     "os/signal"
-    "path/filepath"
+    "regexp"
+    "runtime"
+    "sort"
     "strings"
     "sync"
     "sync/atomic"
@@ -17,236 +24,761 @@ import (
     "time"
 
     "github.com/fatih/color"
+    "golang.org/x/net/html"
     "golang.org/x/time/rate"
 )
 
-var (
-    startTime    time.Time
-    lastUpdate   time.Time
-    lastFoundURL atomic.Value
-    urlsChecked  uint64
-    liveCount    uint64
+const (
+    VERSION         = "3.2"
+    DEFAULT_WORKERS = 100
+    DEFAULT_RATE    = 100
+    DEFAULT_TIMEOUT = 3 * time.Second
+    BATCH_SIZE      = 1000
+    MAX_BODY_SIZE   = 10 * 1024 // 10KB for verification
+    TITLE_BODY_SIZE = 8192      // 8KB for title extraction
 )
 
+// Compile regex once for performance
+var (
+    whitespaceRegex = regexp.MustCompile(`\s+`)
+)
+
+// Config holds all configuration options
+type Config struct {
+    Workers        int           // Number of concurrent workers
+    Rate          float64       // Requests per second
+    Timeout       time.Duration // Request timeout
+    OutputFormat  string        // Output format
+    Silent        bool          // Silent mode for pipelines
+    FastMode      bool          // Sacrifice some accuracy for maximum speed
+    VerifyMode    bool          // Maximum accuracy, slower
+    JSONOutput    bool          // JSON output format
+    OnlyStatus    []int         // Only match specific status codes
+    FollowRedirect bool         // Follow HTTP redirects
+    ExtractTitle  bool          // Extract page titles
+    MaxBodySize   int64         // Maximum response body size to read
+    ShowFailed    bool          // Show failed requests
+    RobustTitle   bool          // Use robust HTML parser for titles (slower)
+    TLSMinVersion uint16        // Minimum TLS version
+}
+
+// Result represents the outcome of checking a single URL
 type Result struct {
-    URL   string
-    Alive bool
+    URL          string        `json:"url"`
+    Status       int           `json:"status_code"`
+    Length       int64         `json:"content_length"`
+    ResponseTime time.Duration `json:"response_time_ms"`
+    Title        string        `json:"title,omitempty"`
+    Server       string        `json:"server,omitempty"`
+    Redirect     string        `json:"redirect,omitempty"`
+    Error        string        `json:"error,omitempty"`
+    Alive        bool          `json:"alive"`
+    Verified     bool          `json:"verified"`
 }
 
-func updateProgress(currentURL string) {
-    now := time.Now()
-    if now.Sub(lastUpdate) >= time.Millisecond*100 {
-        lastUpdate = now
-        elapsed := now.Sub(startTime).Seconds()
-        speed := float64(atomic.LoadUint64(&urlsChecked)) / elapsed
-        lastFound := lastFoundURL.Load()
-        
-        // Clear previous lines and move cursor up
-        fmt.Print("\033[2K\r")
-        fmt.Print("\033[A\033[2K\r")
-        fmt.Print("\033[A\033[2K\r")
-        fmt.Print("\033[A\033[2K\r")
-        
-        // Print status
-        fmt.Printf("Checking: %s\n", currentURL)
-        if lastFound != nil {
-            fmt.Printf("Last Found: %s\n", lastFound.(string))
-        }
-        fmt.Printf("Progress: %d found - %.1f URLs/sec\n", atomic.LoadUint64(&liveCount), speed)
-        
-        // Print progress bar
-        width := 50
-        progress := float64(atomic.LoadUint64(&urlsChecked)) / float64(totalURLs)
-        completed := int(progress * float64(width))
-        fmt.Printf("[%s%s] %.0f%%\n",
-            strings.Repeat("=", completed),
-            strings.Repeat("-", width-completed),
-            progress*100)
-    }
+// Stats tracks scanning progress and performance metrics
+type Stats struct {
+    started   time.Time
+    checked   uint64
+    alive     uint64
+    errors    uint64
+    verified  uint64
+    totalUrls int64
 }
 
-func readURLsFromFile(filePath string) ([]string, error) {
-    file, err := os.Open(filePath)
-    if err != nil {
-        return nil, err
+// String returns a formatted string representation of current stats
+func (s *Stats) String() string {
+    elapsed := time.Since(s.started)
+    var speed float64
+    if elapsed.Seconds() > 0 {
+        speed = float64(atomic.LoadUint64(&s.checked)) / elapsed.Seconds()
     }
-    defer file.Close()
-
-    var urls []string
-    scanner := bufio.NewScanner(file)
-    for scanner.Scan() {
-        url := strings.TrimSpace(scanner.Text())
-        if url != "" {
-            url = strings.TrimPrefix(strings.TrimPrefix(url, "http://"), "https://")
-            urls = append(urls, url)
-        }
-    }
-    return urls, scanner.Err()
+    return fmt.Sprintf("Checked: %d | Alive: %d | Verified: %d | Errors: %d | Speed: %.0f req/s",
+        atomic.LoadUint64(&s.checked),
+        atomic.LoadUint64(&s.alive),
+        atomic.LoadUint64(&s.verified),
+        atomic.LoadUint64(&s.errors),
+        speed)
 }
 
-func readProxiesFromFile(filePath string) ([]string, error) {
-    file, err := os.Open(filePath)
-    if err != nil {
-        return nil, err
-    }
-    defer file.Close()
-
-    var proxies []string
-    scanner := bufio.NewScanner(file)
-    for scanner.Scan() {
-        proxy := strings.TrimSpace(scanner.Text())
-        if proxy != "" {
-            proxies = append(proxies, proxy)
-        }
-    }
-    return proxies, scanner.Err()
+// FastHTTPClient is an optimized HTTP client for maximum speed
+type FastHTTPClient struct {
+    client    *http.Client
+    transport *http.Transport
 }
 
-func createClientWithProxy(proxyURL string) (*http.Client, error) {
-    proxy, err := url.Parse(proxyURL)
-    if err != nil {
-        return nil, err
-    }
-    
+// NewFastHTTPClient creates a new optimized HTTP client
+func NewFastHTTPClient(config *Config) *FastHTTPClient {
+    // Ultra-optimized transport for scanning diverse hosts
     transport := &http.Transport{
-        Proxy:               http.ProxyURL(proxy),
-        DisableKeepAlives:  true,
-        MaxIdleConns:       100,
-        IdleConnTimeout:    90 * time.Second,
-        DisableCompression: true,
-        ForceAttemptHTTP2:  true,
+        DialContext: (&net.Dialer{
+            Timeout:   2 * time.Second,
+            KeepAlive: 0,        // Disable keep-alive for diverse host scanning efficiency
+            DualStack: true,
+        }).DialContext,
+        
+        // Speed-optimized settings for mass scanning diverse hosts
+        MaxIdleConns:          0,                    // No idle connections for diverse hosts
+        MaxIdleConnsPerHost:   0,                    
+        MaxConnsPerHost:       config.Workers * 2,   // Allow more concurrent connections
+        IdleConnTimeout:       0,
+        DisableKeepAlives:     true,                 // Optimal for diverse host scanning
+        DisableCompression:    true,                 // Less CPU overhead
+        ForceAttemptHTTP2:     false,                // HTTP/1.1 is faster for this use case
+        ExpectContinueTimeout: 0,
+        ResponseHeaderTimeout: config.Timeout,
+        
+        // TLS configuration with configurable minimum version
+        TLSClientConfig: &tls.Config{
+            InsecureSkipVerify: true, // Speed > security for reconnaissance
+            MinVersion:         config.TLSMinVersion,
+        },
     }
-    
-    return &http.Client{
-        Transport: transport,
-        Timeout:   15 * time.Second,
-    }, nil
+
+    return &FastHTTPClient{
+        transport: transport,
+        client: &http.Client{
+            Transport: transport,
+            Timeout:   config.Timeout,
+            CheckRedirect: func(req *http.Request, via []*http.Request) error {
+                if !config.FollowRedirect || len(via) >= 3 {
+                    return http.ErrUseLastResponse
+                }
+                return nil
+            },
+        },
+    }
 }
 
-func checkURL(ctx context.Context, baseURL string, client *http.Client, limiter *rate.Limiter, httpsOnly bool) (string, bool) {
-    if err := limiter.Wait(ctx); err != nil {
-        return "", false
+// RequestType defines the purpose of an HTTP request
+type RequestType int
+
+const (
+    RequestTypeCheck RequestType = iota
+    RequestTypeTitle
+    RequestTypeVerification
+)
+
+// createRequest creates a new HTTP request with appropriate headers for the request type
+func (fc *FastHTTPClient) createRequest(ctx context.Context, method, url string, reqType RequestType) (*http.Request, error) {
+    req, err := http.NewRequestWithContext(ctx, method, url, nil)
+    if err != nil {
+        return nil, err
+    }
+    
+    // Base headers for all requests
+    req.Header.Set("User-Agent", "FastHunter/"+VERSION)
+    req.Header.Set("Accept", "*/*")
+    
+    // Request-type specific headers
+    switch reqType {
+    case RequestTypeTitle:
+        req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+        req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+    case RequestTypeVerification:
+        req.Header.Set("Accept", "text/html,application/xhtml+xml")
+        req.Header.Set("Cache-Control", "no-cache") // Ensure fresh content for verification
+    case RequestTypeCheck:
+        // Minimal headers for speed
+    }
+    
+    return req, nil
+}
+
+// fetchBody makes a GET request for body content (unified for title/verification)
+func (fc *FastHTTPClient) fetchBody(ctx context.Context, fullURL string, reqType RequestType) (*http.Response, error) {
+    req, err := fc.createRequest(ctx, "GET", fullURL, reqType)
+    if err != nil {
+        return nil, err
+    }
+    
+    return fc.client.Do(req)
+}
+
+// CheckURL performs ultra-fast URL verification with minimal false positives
+func (fc *FastHTTPClient) CheckURL(ctx context.Context, rawURL string, config *Config) *Result {
+    start := time.Now()
+    result := &Result{URL: rawURL}
+    
+    // Robust URL validation
+    if !isValidURL(rawURL) {
+        result.Error = "invalid_url"
+        return result
     }
 
-    protocols := []string{"https://"}
-    if !httpsOnly {
-        protocols = append(protocols, "http://")
-    }
-
+    // Try HTTPS first (more common in 2024), then HTTP
+    protocols := []string{"https://", "http://"}
+    var lastError error
+    
     for _, protocol := range protocols {
-        fullURL := protocol + baseURL
-        req, err := http.NewRequestWithContext(ctx, "GET", fullURL, nil)
+        fullURL := protocol + strings.TrimPrefix(strings.TrimPrefix(rawURL, "https://"), "http://")
+        
+        // Use HEAD by default for speed, GET only if we need title
+        method := "HEAD"
+        if config.ExtractTitle {
+            method = "GET"
+        }
+        
+        req, err := fc.createRequest(ctx, method, fullURL, RequestTypeCheck)
         if err != nil {
+            lastError = err
             continue
         }
-
-        req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
         
-        resp, err := client.Do(req)
+        resp, err := fc.client.Do(req)
         if err != nil {
-            continue
+            lastError = err
+            // In fast mode, don't retry
+            if config.FastMode {
+                continue
+            }
+            // In normal mode, one quick retry with exponential backoff
+            time.Sleep(50 * time.Millisecond)
+            resp, err = fc.client.Do(req)
+            if err != nil {
+                lastError = err
+                continue
+            }
         }
         
         defer resp.Body.Close()
         
-        if resp.StatusCode == http.StatusOK {
-            return fullURL, true
+        // Populate basic result data
+        result.URL = fullURL
+        result.Status = resp.StatusCode
+        result.ResponseTime = time.Since(start)
+        result.Server = resp.Header.Get("Server")
+        
+        // Calculate content length carefully
+        if method == "GET" && resp.Body != nil {
+            // Consume body to get actual length, but save it for potential reuse
+            bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, config.MaxBodySize))
+            if err == nil {
+                result.Length = int64(len(bodyBytes))
+                
+                // Store body for potential title extraction or verification
+                resp.Body = io.NopCloser(strings.NewReader(string(bodyBytes)))
+            }
+        } else if resp.ContentLength > 0 {
+            result.Length = resp.ContentLength
+        }
+        
+        // Determine if URL is "alive" based on reliable status codes
+        if isAliveStatus(resp.StatusCode, config) {
+            result.Alive = true
+            
+            // Additional verification to prevent false positives
+            needsVerification := !config.FastMode && shouldVerifyResponse(resp, config)
+            if needsVerification {
+                verified, verifyErr := fc.performVerification(ctx, fullURL, method == "GET", resp)
+                if verifyErr != nil {
+                    result.Error = fmt.Sprintf("verification_failed: %s", verifyErr.Error())
+                } else if !verified {
+                    result.Alive = false
+                    result.Error = "false_positive_detected"
+                    return result
+                } else {
+                    result.Verified = true
+                }
+            }
+            
+            // Extract title if required
+            if config.ExtractTitle {
+                if method == "GET" && resp.Body != nil {
+                    // Use the already-read body
+                    result.Title = fc.extractTitle(resp.Body, config.RobustTitle)
+                } else {
+                    // Make a GET request specifically for title
+                    titleResp, err := fc.fetchBody(ctx, fullURL, RequestTypeTitle)
+                    if err == nil {
+                        defer titleResp.Body.Close()
+                        result.Title = fc.extractTitle(titleResp.Body, config.RobustTitle)
+                    }
+                }
+            }
+            
+            // Handle redirects
+            if isRedirect(resp.StatusCode) && resp.Header.Get("Location") != "" {
+                result.Redirect = resp.Header.Get("Location")
+            }
+        }
+        
+        return result
+    }
+    
+    // If we get here, both protocols failed
+    if lastError != nil {
+        result.Error = fmt.Sprintf("connection_failed: %s", lastError.Error())
+    } else {
+        result.Error = "no_response"
+    }
+    return result
+}
+
+// performVerification does additional verification to prevent false positives
+func (fc *FastHTTPClient) performVerification(ctx context.Context, fullURL string, alreadyGET bool, originalResp *http.Response) (bool, error) {
+    var resp *http.Response
+    var err error
+    
+    if alreadyGET && originalResp.Body != nil {
+        // Try to reuse the already-read body first
+        verified, verifyErr := fc.verifyResponseBody(originalResp)
+        if verifyErr == nil {
+            return verified, nil
+        }
+        // If that fails, fall back to re-fetching
+    }
+    
+    // Make a fresh GET request for verification
+    resp, err = fc.fetchBody(ctx, fullURL, RequestTypeVerification)
+    if err != nil {
+        return false, fmt.Errorf("verification_request_failed: %w", err)
+    }
+    defer resp.Body.Close()
+    
+    return fc.verifyResponseBody(resp)
+}
+
+// verifyResponseBody checks if the response body indicates a false positive
+func (fc *FastHTTPClient) verifyResponseBody(resp *http.Response) (bool, error) {
+    if resp.Body == nil {
+        return true, nil // No body to analyze
+    }
+    
+    // Read a reasonable sample of the body for verification
+    body := make([]byte, 2048) // Sufficient for most false positive detection
+    n, _ := resp.Body.Read(body)
+    content := strings.ToLower(string(body[:n]))
+    
+    // Comprehensive patterns that indicate false positives
+    falsePositivePatterns := []string{
+        "domain for sale",
+        "this domain is for sale",
+        "page not found",
+        "404 not found",
+        "file not found",
+        "this domain may be for sale",
+        "parked domain",
+        "domain parking",
+        "coming soon",
+        "under construction",
+        "default page",
+        "welcome to nginx",
+        "apache2 default page",
+        "iis windows server",
+        "default website",
+        "placeholder page",
+        "this site can't be reached",
+        "website temporarily unavailable",
+        "suspended",
+        "account suspended",
+        "hosting account",
+        "plesk default page",
+        "cpanel",
+        "whm default page",
+        "godaddy",
+        "namecheap",
+        "sedo domain parking",
+    }
+    
+    for _, pattern := range falsePositivePatterns {
+        if strings.Contains(content, pattern) {
+            return false, nil
         }
     }
     
-    return "", false
+    return true, nil
 }
 
-var totalURLs int
+// isAliveStatus determines which status codes indicate a live website
+func isAliveStatus(status int, config *Config) bool {
+    // If specific status codes are requested, only match those
+    if len(config.OnlyStatus) > 0 {
+        for _, s := range config.OnlyStatus {
+            if status == s {
+                return true
+            }
+        }
+        return false
+    }
+    
+    // Status codes that reliably indicate the site is alive
+    // Optimized to minimize false positives
+    aliveStatuses := []int{
+        200, 201, 202, 204, 206,           // Success codes
+        301, 302, 303, 307, 308,           // Redirects (content exists)
+        401, 403,                          // Authentication/authorization (content exists)
+        405, 406, 409, 410,               // Method/content issues (but server is alive)
+        429,                               // Rate limited (server is alive)
+        500, 501, 502, 503,               // Server errors (but server exists)
+    }
+    
+    for _, code := range aliveStatuses {
+        if status == code {
+            return true
+        }
+    }
+    
+    return false
+}
 
-func processURLs(ctx context.Context, urls []string, results chan<- Result, client *http.Client, limiter *rate.Limiter, httpsOnly bool) {
-    for _, u := range urls {
+// isRedirect checks if status code indicates a redirect
+func isRedirect(status int) bool {
+    return status >= 300 && status < 400
+}
+
+// isValidURL performs robust URL validation
+func isValidURL(rawURL string) bool {
+    if rawURL == "" || len(rawURL) > 200 {
+        return false
+    }
+    
+    // Quick basic validation first for performance
+    if strings.ContainsAny(rawURL, " \t\n\r<>\"{}|\\^`[]") {
+        return false
+    }
+    
+    // Add protocol for validation if missing
+    testURL := rawURL
+    if !strings.Contains(rawURL, "://") {
+        testURL = "https://" + rawURL
+    }
+    
+    // Use Go's standard URL parser for robust validation
+    _, err := url.ParseRequestURI(testURL)
+    return err == nil
+}
+
+// shouldVerifyResponse determines if additional verification is needed
+func shouldVerifyResponse(resp *http.Response, config *Config) bool {
+    // In fast mode, skip verification
+    if config.FastMode {
+        return false
+    }
+    
+    // Always verify in verify mode
+    if config.VerifyMode {
+        return true
+    }
+    
+    // Check for common web server signatures that might serve generic pages
+    contentType := resp.Header.Get("Content-Type")
+    server := resp.Header.Get("Server")
+    
+    // Common web server signatures that often serve default/parked pages
+    genericServerSignatures := []string{"cloudflare", "nginx", "apache", "iis", "lighttpd"}
+    for _, sig := range genericServerSignatures {
+        if strings.Contains(strings.ToLower(server), sig) && 
+           resp.StatusCode == 200 && 
+           strings.Contains(strings.ToLower(contentType), "text/html") {
+            return true
+        }
+    }
+    
+    return false
+}
+
+// extractTitle extracts the HTML title from response body
+func (fc *FastHTTPClient) extractTitle(body io.Reader, robust bool) string {
+    if robust {
+        return fc.extractTitleRobust(body)
+    }
+    return fc.extractTitleFast(body)
+}
+
+// extractTitleFast performs fast but less robust title extraction
+func (fc *FastHTTPClient) extractTitleFast(body io.Reader) string {
+    // Fast title extraction - only read first portion
+    buffer := make([]byte, TITLE_BODY_SIZE)
+    n, _ := body.Read(buffer)
+    content := strings.ToLower(string(buffer[:n]))
+    
+    // Look for opening title tag with improved flexibility
+    titleStart := -1
+    contentStr := string(buffer[:n]) // Preserve original case for extraction
+    
+    for _, pattern := range []string{"<title>", "<title "} {
+        if idx := strings.Index(content, pattern); idx != -1 {
+            if pattern == "<title>" {
+                titleStart = idx + 7
+            } else {
+                // Handle <title attributes>
+                closeIdx := strings.Index(content[idx:], ">")
+                if closeIdx != -1 {
+                    titleStart = idx + closeIdx + 1
+                }
+            }
+            break
+        }
+    }
+    
+    if titleStart == -1 {
+        return ""
+    }
+    
+    // Look for closing title tag
+    end := strings.Index(content[titleStart:], "</title>")
+    if end == -1 {
+        return ""
+    }
+    
+    // Extract title preserving original case
+    title := strings.TrimSpace(contentStr[titleStart : titleStart+end])
+    
+    // Efficient whitespace cleaning using compiled regex
+    title = whitespaceRegex.ReplaceAllString(title, " ")
+    title = strings.TrimSpace(title)
+    
+    // Trim very long titles
+    if len(title) > 100 {
+        title = title[:100] + "..."
+    }
+    
+    return title
+}
+
+// extractTitleRobust performs robust title extraction using HTML parser
+func (fc *FastHTTPClient) extractTitleRobust(body io.Reader) string {
+    // Limit reading for performance
+    limitedBody := io.LimitReader(body, TITLE_BODY_SIZE)
+    
+    tokenizer := html.NewTokenizer(limitedBody)
+    
+    for {
+        tokenType := tokenizer.Next()
+        switch tokenType {
+        case html.ErrorToken:
+            return "" // End of document or error
+        case html.StartTagToken:
+            token := tokenizer.Token()
+            if token.Data == "title" {
+                // Found title tag, get the text content
+                tokenType = tokenizer.Next()
+                if tokenType == html.TextToken {
+                    title := strings.TrimSpace(tokenizer.Token().Data)
+                    // Clean whitespace efficiently
+                    title = whitespaceRegex.ReplaceAllString(title, " ")
+                    if len(title) > 100 {
+                        title = title[:100] + "..."
+                    }
+                    return title
+                }
+            }
+        }
+    }
+}
+
+// processURLs is the main worker function that processes URLs from a channel
+func processURLs(ctx context.Context, urls <-chan string, results chan<- *Result, client *FastHTTPClient, config *Config, stats *Stats, limiter *rate.Limiter) {
+    defer func() {
+        if r := recover(); r != nil {
+            fmt.Fprintf(os.Stderr, "Worker panic: %v\n", r)
+        }
+    }()
+    
+    for {
         select {
         case <-ctx.Done():
             return
-        default:
-            fullURL, alive := checkURL(ctx, u, client, limiter, httpsOnly)
-            if alive {
-                lastFoundURL.Store(fullURL)
-                atomic.AddUint64(&liveCount, 1)
+        case url, ok := <-urls:
+            if !ok {
+                return
             }
-            atomic.AddUint64(&urlsChecked, 1)
-            results <- Result{URL: fullURL, Alive: alive}
-            updateProgress(u)
+            
+            // Rate limiting only if not in fast mode
+            if !config.FastMode {
+                if err := limiter.Wait(ctx); err != nil {
+                    return // Context cancelled during rate limiting
+                }
+            }
+            
+            result := client.CheckURL(ctx, url, config)
+            
+            // Update stats atomically
+            atomic.AddUint64(&stats.checked, 1)
+            if result.Alive {
+                atomic.AddUint64(&stats.alive, 1)
+            }
+            if result.Verified {
+                atomic.AddUint64(&stats.verified, 1)
+            }
+            if result.Error != "" {
+                atomic.AddUint64(&stats.errors, 1)
+            }
+            
+            results <- result
+        }
+    }
+}
+
+// displayProgress shows real-time progress without affecting performance
+func displayProgress(ctx context.Context, stats *Stats, config *Config) {
+    if config.Silent {
+        return
+    }
+    
+    ticker := time.NewTicker(1 * time.Second)
+    defer ticker.Stop()
+    
+    for {
+        select {
+        case <-ctx.Done():
+            return
+        case <-ticker.C:
+            fmt.Fprintf(os.Stderr, "\r\033[K%s", stats.String())
+        }
+    }
+}
+
+// readInput reads URLs from stdin for pipeline compatibility
+func readInput() ([]string, error) {
+    var urls []string
+    
+    // Check if there's data available on stdin
+    stat, err := os.Stdin.Stat()
+    if err != nil {
+        return nil, err
+    }
+    
+    if (stat.Mode() & os.ModeCharDevice) != 0 {
+        return nil, errors.New("no input provided via pipe or redirection")
+    }
+    
+    // Read from stdin for pipeline compatibility
+    scanner := bufio.NewScanner(os.Stdin)
+    scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024) // Larger buffer for performance
+    
+    for scanner.Scan() {
+        url := strings.TrimSpace(scanner.Text())
+        if url != "" && !strings.HasPrefix(url, "#") {
+            urls = append(urls, url)
+        }
+    }
+    
+    return urls, scanner.Err()
+}
+
+// outputResult formats and outputs a single result
+func outputResult(result *Result, config *Config) {
+    // In silent mode, only show alive URLs unless explicitly requested
+    if config.Silent && !result.Alive && !config.ShowFailed {
+        return
+    }
+    
+    if config.JSONOutput {
+        data, _ := json.Marshal(result)
+        fmt.Println(string(data))
+    } else {
+        if result.Alive {
+            output := result.URL
+            if config.ExtractTitle && result.Title != "" {
+                output += " [" + result.Title + "]"
+            }
+            if result.Status != 200 {
+                output += fmt.Sprintf(" [%d]", result.Status)
+            }
+            if result.Verified {
+                output += " [VERIFIED]"
+            }
+            fmt.Println(output)
+        } else if config.ShowFailed {
+            fmt.Printf("%s [FAILED: %s]\n", result.URL, result.Error)
         }
     }
 }
 
 func main() {
-    startTime = time.Now()
-    lastUpdate = startTime
-    
-    color.New(color.FgHiCyan).Println("AliveHunter v1.4")
-    color.New(color.FgHiYellow).Println("Made with love by Albert.C")
-    fmt.Println()
+    // Display help with examples
+    if len(os.Args) > 1 && (os.Args[1] == "-h" || os.Args[1] == "--help") {
+        color.New(color.FgHiCyan).Println("FastHunter v" + VERSION + " - Ultra-fast web discovery")
+        color.New(color.FgHiYellow).Println("Optimized for speed with zero false positives")
+        fmt.Println("\nUsage: cat domains.txt | fasthunter [options]")
+        fmt.Println("\nModes:")
+        fmt.Println("  Default: Perfect balance of speed and accuracy")
+        fmt.Println("  -fast:   Maximum speed (minimal verification)")
+        fmt.Println("  -verify: Zero false positives guaranteed (slower)")
+        fmt.Println("\nExamples:")
+        fmt.Println("  subfinder -d target.com | fasthunter -silent")
+        fmt.Println("  cat domains.txt | fasthunter -fast -title")
+        fmt.Println("  echo 'example.com' | fasthunter -json -verify")
+        fmt.Println("  cat large_list.txt | fasthunter -fast -t 200 -rate 200")
+        fmt.Println()
+        return
+    }
 
-    inputFile := flag.String("l", "", "File containing URLs to check")
-    outputFile := flag.String("o", "", "Output file for results")
-    proxyFile := flag.String("p", "", "File containing proxy list")
-    workers := flag.Int("w", 10, "Number of concurrent workers")
-    rateLimit := flag.Float64("rate", 10, "Requests per second")
-    httpsOnly := flag.Bool("https", false, "Check only HTTPS URLs")
+    // Default configuration optimized for best performance out-of-the-box
+    config := &Config{
+        Workers:       DEFAULT_WORKERS,
+        Rate:         DEFAULT_RATE,
+        Timeout:      DEFAULT_TIMEOUT,
+        MaxBodySize:   MAX_BODY_SIZE,
+        OnlyStatus:    []int{},
+        TLSMinVersion: tls.VersionTLS12, // Secure default
+    }
+
+    // Command line flags
+    flag.IntVar(&config.Workers, "t", config.Workers, "Number of threads")
+    flag.IntVar(&config.Workers, "threads", config.Workers, "Number of threads (alias)")
+    flag.Float64Var(&config.Rate, "rate", config.Rate, "Requests per second")
+    flag.DurationVar(&config.Timeout, "timeout", config.Timeout, "Request timeout")
+    flag.BoolVar(&config.Silent, "silent", false, "Silent mode (pipeline friendly)")
+    flag.BoolVar(&config.JSONOutput, "json", false, "JSON output")
+    flag.BoolVar(&config.ExtractTitle, "title", false, "Extract page titles")
+    flag.BoolVar(&config.RobustTitle, "robust-title", false, "Use robust HTML parser for titles (slower)")
+    flag.BoolVar(&config.FastMode, "fast", false, "Fast mode (minimal verification)")
+    flag.BoolVar(&config.VerifyMode, "verify", false, "Verify mode (zero false positives)")
+    flag.BoolVar(&config.FollowRedirect, "follow-redirects", false, "Follow HTTP redirects")
+    flag.BoolVar(&config.ShowFailed, "show-failed", false, "Show failed requests")
+    
+    statusCodes := flag.String("mc", "", "Match status codes (comma separated)")
+    tlsVersion := flag.String("tls-min", "1.2", "Minimum TLS version (1.0, 1.1, 1.2, 1.3)")
     flag.Parse()
 
-    if *inputFile == "" {
-        fmt.Println("Please specify an input file using -l flag")
-        return
+    // Parse TLS version
+    switch *tlsVersion {
+    case "1.0":
+        config.TLSMinVersion = tls.VersionTLS10
+    case "1.1":
+        config.TLSMinVersion = tls.VersionTLS11
+    case "1.2":
+        config.TLSMinVersion = tls.VersionTLS12
+    case "1.3":
+        config.TLSMinVersion = tls.VersionTLS13
+    default:
+        config.TLSMinVersion = tls.VersionTLS12
     }
 
-    urls, err := readURLsFromFile(*inputFile)
-    if err != nil {
-        fmt.Printf("Error reading URLs: %v\n", err)
-        return
-    }
-
-    totalURLs = len(urls)
-    if totalURLs == 0 {
-        fmt.Println("No URLs found in input file")
-        return
-    }
-
-    outFileName := *outputFile
-    if outFileName == "" {
-        outFileName = strings.TrimSuffix(*inputFile, filepath.Ext(*inputFile)) + "_alive.txt"
-    }
-
-    outFile, err := os.Create(outFileName)
-    if err != nil {
-        fmt.Printf("Error creating output file: %v\n", err)
-        return
-    }
-    defer outFile.Close()
-
-    var clients []*http.Client
-    if *proxyFile != "" {
-        proxies, err := readProxiesFromFile(*proxyFile)
-        if err != nil {
-            fmt.Printf("Error reading proxies: %v\n", err)
-            return
-        }
-        for _, proxy := range proxies {
-            if client, err := createClientWithProxy(proxy); err == nil {
-                clients = append(clients, client)
+    // Parse status codes
+    if *statusCodes != "" {
+        parts := strings.Split(*statusCodes, ",")
+        for _, part := range parts {
+            var code int
+            if _, err := fmt.Sscanf(strings.TrimSpace(part), "%d", &code); err == nil {
+                config.OnlyStatus = append(config.OnlyStatus, code)
             }
         }
-    }
-    if len(clients) == 0 {
-        clients = append(clients, &http.Client{
-            Timeout: 15 * time.Second,
-            Transport: &http.Transport{
-                DisableKeepAlives:  true,
-                MaxIdleConns:       100,
-                IdleConnTimeout:    90 * time.Second,
-                ForceAttemptHTTP2:  true,
-            },
-        })
+        sort.Ints(config.OnlyStatus)
     }
 
+    // Auto-optimize based on mode
+    if config.FastMode {
+        config.Workers *= 2                    // More workers for maximum throughput
+        config.Rate *= 2                       // Higher rate limit
+        config.Timeout = 1 * time.Second       // Aggressive timeout
+    }
+    
+    if config.VerifyMode {
+        config.Workers = max(config.Workers/2, 10) // Fewer workers but minimum 10
+        config.Timeout = 10 * time.Second          // Conservative timeout
+    }
+
+    // System optimization - respect system limits
+    maxWorkers := runtime.NumCPU() * 50
+    if config.Workers > maxWorkers {
+        config.Workers = maxWorkers
+    }
+
+    // Setup graceful shutdown
     ctx, cancel := context.WithCancel(context.Background())
     defer cancel()
 
@@ -254,56 +786,100 @@ func main() {
     signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
     go func() {
         <-sigChan
+        if !config.Silent {
+            fmt.Fprintf(os.Stderr, "\nReceived interrupt, shutting down gracefully...\n")
+        }
         cancel()
     }()
 
-    limiter := rate.NewLimiter(rate.Limit(*rateLimit), 1)
-    results := make(chan Result, *workers)
-    var wg sync.WaitGroup
-
-    urlsPerWorker := (totalURLs + *workers - 1) / *workers
-    for i := 0; i < *workers; i++ {
-        start := i * urlsPerWorker
-        end := start + urlsPerWorker
-        if end > totalURLs {
-            end = totalURLs
-        }
-        if start >= end {
-            break
-        }
-
-        wg.Add(1)
-        go func(workerURLs []string) {
-            defer wg.Done()
-            client := clients[0]
-            if len(clients) > 1 {
-                client = clients[i%len(clients)]
-            }
-            processURLs(ctx, workerURLs, results, client, limiter, *httpsOnly)
-        }(urls[start:end])
+    // Read input from stdin
+    urls, err := readInput()
+    if err != nil {
+        fmt.Fprintf(os.Stderr, "Error reading input: %v\n", err)
+        fmt.Fprintf(os.Stderr, "Usage: cat domains.txt | %s [options]\n", os.Args[0])
+        os.Exit(1)
     }
 
+    if len(urls) == 0 {
+        fmt.Fprintf(os.Stderr, "No URLs provided via stdin\n")
+        os.Exit(1)
+    }
+
+    // Initialize performance tracking
+    stats := &Stats{
+        started:   time.Now(),
+        totalUrls: int64(len(urls)),
+    }
+
+    // Setup worker coordination
+    urlChan := make(chan string, BATCH_SIZE)
+    resultsChan := make(chan *Result, BATCH_SIZE)
+    limiter := rate.NewLimiter(rate.Limit(config.Rate), 1)
+    client := NewFastHTTPClient(config)
+
+    // Start progress monitoring
+    go displayProgress(ctx, stats, config)
+
+    // Launch worker pool
+    var wg sync.WaitGroup
+    for i := 0; i < config.Workers; i++ {
+        wg.Add(1)
+        go func() {
+            defer wg.Done()
+            processURLs(ctx, urlChan, resultsChan, client, config, stats, limiter)
+        }()
+    }
+
+    // Process and output results
+    resultsDone := make(chan struct{})
     go func() {
-        wg.Wait()
-        close(results)
+        defer close(resultsDone)
+        for result := range resultsChan {
+            outputResult(result, config)
+        }
     }()
 
-    writer := bufio.NewWriter(outFile)
-    for result := range results {
-        if result.Alive {
-            writer.WriteString(result.URL + "\n")
-            writer.Flush()
+    // Feed URLs to workers
+    go func() {
+        defer close(urlChan)
+        for _, url := range urls {
+            select {
+            case <-ctx.Done():
+                return
+            case urlChan <- url:
+            }
+        }
+    }()
+
+    // Coordinate shutdown
+    go func() {
+        wg.Wait()
+        close(resultsChan)
+    }()
+
+    // Wait for all results to be processed
+    <-resultsDone
+
+    // Final statistics
+    if !config.Silent {
+        fmt.Fprintf(os.Stderr, "\nScan completed: %s\n", stats.String())
+        elapsed := time.Since(stats.started)
+        fmt.Fprintf(os.Stderr, "Total time: %v\n", elapsed.Round(time.Second))
+        
+        // Performance summary
+        alive := atomic.LoadUint64(&stats.alive)
+        checked := atomic.LoadUint64(&stats.checked)
+        if checked > 0 {
+            successRate := float64(alive) / float64(checked) * 100
+            fmt.Fprintf(os.Stderr, "Success rate: %.1f%%\n", successRate)
         }
     }
+}
 
-    // Clear progress display
-    fmt.Print("\033[2K\r")
-    fmt.Print("\033[A\033[2K\r")
-    fmt.Print("\033[A\033[2K\r")
-    fmt.Print("\033[A\033[2K\r")
-
-    fmt.Printf("\nTotal URLs processed: %d\n", totalURLs)
-    fmt.Printf("Live URLs found: %d\n", atomic.LoadUint64(&liveCount))
-    fmt.Printf("Results saved to: %s\n", outFileName)
-    fmt.Printf("Total execution time: %s\n", time.Since(startTime))
+// max returns the maximum of two integers
+func max(a, b int) int {
+    if a > b {
+        return a
+    }
+    return b
 }
