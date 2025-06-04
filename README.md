@@ -495,15 +495,15 @@ cat priority_targets.txt | alivehunter -verify -title -json > verified.json
 
 🔗 Related Tools and Integration
 
-Subfinder - Subdomain discovery
+- **Subfinder - Subdomain discovery**
 
-httpx - HTTP probing (can be used after AliveHunter)
+- **httpx - HTTP probing (can be used after AliveHunter)**
 
-Nuclei - Vulnerability scanning
+- **Nuclei - Vulnerability scanning**
 
-dnsx - DNS toolkit
+- **dnsx - DNS toolkit**
 
-amass - Network mapping
+- **amass - Network mapping**
 
 📄 License
 This project is licensed under the MIT License - see the LICENSE file for details.
@@ -535,14 +535,13 @@ Open a Pull Request
 ## 📞 Support
 If you encounter any issues or have questions:
 
+🐛 Bug Reports: Open an issue with detailed information
 
-## 🐛 Bug Reports: Open an issue with detailed information
+💡 Feature Requests: Describe your use case and proposed solution
 
-## 💡 Feature Requests: Describe your use case and proposed solution
+📖 Documentation: Check examples and FAQ sections first
 
-## 📖 Documentation: Check examples and FAQ sections first
-
-## 💬 Community: Share your AliveHunter workflows and tips
+💬 Community: Share your AliveHunter workflows and tips
 
 ## Made with ❤️ by Albert.C
 
