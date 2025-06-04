@@ -41,18 +41,30 @@ OneLiner (Recommended)
 
 ```bash
 git clone https://github.com/Acorzo1983/AliveHunter.git && cd AliveHunter && chmod +x install.sh && ./install.sh
-
 ```
 
 Manual Installation
 
 ```bash
+# Or step by step
 git clone https://github.com/Acorzo1983/AliveHunter.git
 cd AliveHunter
 chmod +x install.sh
 ./install.sh
 ```
 
+🎯 For GitHub Releases:
+With the Makefile you can easily create releases:
+
+```bash
+# Compile for all platforms
+make clean && make build-all
+
+# Binaries will be in build/ ready to upload:
+# - alivehunter-linux-amd64
+# - alivehunter-windows-amd64.exe  
+# - alivehunter-darwin-amd64
+```
 
 The installer will:
 
