@@ -82,7 +82,12 @@ cat domains.txt | alivehunter
 
 # Silent mode for pipelines
 cat domains.txt | alivehunter -silent
+
+# Bugbounty Pipeline 
+alivehunter -l scope.txt -fast -silent | nuclei -t cves/
 ```
+
+
 
 ### Operation Modes
 
