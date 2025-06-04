@@ -317,6 +317,6 @@ echo "  • Combine with nuclei: alivehunter -l scope.txt -silent | nuclei"
 echo "  • JSON output works great with jq for filtering"
 
 echo
-color.New(color.FgHiGreen).Println("Made with ❤️ by Albert.C")
+echo -e "${GREEN}Made with ❤️ by Albert.C${NC}"
 echo -e "${YELLOW}Happy Bug Bounty Hunting! 🎯${NC}"
 echo
