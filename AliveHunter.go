@@ -101,14 +101,14 @@ func (s *Stats) String() string {
         speed)
 }
 
-// FastHTTPClient is an optimized HTTP client for maximum speed
-type FastHTTPClient struct {
+// AliveHTTPClient is an optimized HTTP client for maximum speed
+type AliveHTTPClient struct {
     client    *http.Client
     transport *http.Transport
 }
 
-// NewFastHTTPClient creates a new optimized HTTP client
-func NewFastHTTPClient(config *Config) *FastHTTPClient {
+// NewAliveHTTPClient creates a new optimized HTTP client
+func NewAliveHTTPClient(config *Config) *AliveHTTPClient {
     // Ultra-optimized transport for scanning diverse hosts
     transport := &http.Transport{
         DialContext: (&net.Dialer{
@@ -135,7 +135,7 @@ func NewFastHTTPClient(config *Config) *FastHTTPClient {
         },
     }
 
-    return &FastHTTPClient{
+    return &AliveHTTPClient{
         transport: transport,
         client: &http.Client{
             Transport: transport,
@@ -160,14 +160,14 @@ const (
 )
 
 // createRequest creates a new HTTP request with appropriate headers for the request type
-func (fc *FastHTTPClient) createRequest(ctx context.Context, method, url string, reqType RequestType) (*http.Request, error) {
+func (ac *AliveHTTPClient) createRequest(ctx context.Context, method, url string, reqType RequestType) (*http.Request, error) {
     req, err := http.NewRequestWithContext(ctx, method, url, nil)
     if err != nil {
         return nil, err
     }
     
     // Base headers for all requests
-    req.Header.Set("User-Agent", "FastHunter/"+VERSION)
+    req.Header.Set("User-Agent", "AliveHunter/"+VERSION)
     req.Header.Set("Accept", "*/*")
     
     // Request-type specific headers
@@ -186,17 +186,17 @@ func (fc *FastHTTPClient) createRequest(ctx context.Context, method, url string,
 }
 
 // fetchBody makes a GET request for body content (unified for title/verification)
-func (fc *FastHTTPClient) fetchBody(ctx context.Context, fullURL string, reqType RequestType) (*http.Response, error) {
-    req, err := fc.createRequest(ctx, "GET", fullURL, reqType)
+func (ac *AliveHTTPClient) fetchBody(ctx context.Context, fullURL string, reqType RequestType) (*http.Response, error) {
+    req, err := ac.createRequest(ctx, "GET", fullURL, reqType)
     if err != nil {
         return nil, err
     }
     
-    return fc.client.Do(req)
+    return ac.client.Do(req)
 }
 
 // CheckURL performs ultra-fast URL verification with minimal false positives
-func (fc *FastHTTPClient) CheckURL(ctx context.Context, rawURL string, config *Config) *Result {
+func (ac *AliveHTTPClient) CheckURL(ctx context.Context, rawURL string, config *Config) *Result {
     start := time.Now()
     result := &Result{URL: rawURL}
     
@@ -219,13 +219,13 @@ func (fc *FastHTTPClient) CheckURL(ctx context.Context, rawURL string, config *C
             method = "GET"
         }
         
-        req, err := fc.createRequest(ctx, method, fullURL, RequestTypeCheck)
+        req, err := ac.createRequest(ctx, method, fullURL, RequestTypeCheck)
         if err != nil {
             lastError = err
             continue
         }
         
-        resp, err := fc.client.Do(req)
+        resp, err := ac.client.Do(req)
         if err != nil {
             lastError = err
             // In fast mode, don't retry
@@ -234,7 +234,7 @@ func (fc *FastHTTPClient) CheckURL(ctx context.Context, rawURL string, config *C
             }
             // In normal mode, one quick retry with exponential backoff
             time.Sleep(50 * time.Millisecond)
-            resp, err = fc.client.Do(req)
+            resp, err = ac.client.Do(req)
             if err != nil {
                 lastError = err
                 continue
@@ -270,7 +270,7 @@ func (fc *FastHTTPClient) CheckURL(ctx context.Context, rawURL string, config *C
             // Additional verification to prevent false positives
             needsVerification := !config.FastMode && shouldVerifyResponse(resp, config)
             if needsVerification {
-                verified, verifyErr := fc.performVerification(ctx, fullURL, method == "GET", resp)
+                verified, verifyErr := ac.performVerification(ctx, fullURL, method == "GET", resp)
                 if verifyErr != nil {
                     result.Error = fmt.Sprintf("verification_failed: %s", verifyErr.Error())
                 } else if !verified {
@@ -286,13 +286,13 @@ func (fc *FastHTTPClient) CheckURL(ctx context.Context, rawURL string, config *C
             if config.ExtractTitle {
                 if method == "GET" && resp.Body != nil {
                     // Use the already-read body
-                    result.Title = fc.extractTitle(resp.Body, config.RobustTitle)
+                    result.Title = ac.extractTitle(resp.Body, config.RobustTitle)
                 } else {
                     // Make a GET request specifically for title
-                    titleResp, err := fc.fetchBody(ctx, fullURL, RequestTypeTitle)
+                    titleResp, err := ac.fetchBody(ctx, fullURL, RequestTypeTitle)
                     if err == nil {
                         defer titleResp.Body.Close()
-                        result.Title = fc.extractTitle(titleResp.Body, config.RobustTitle)
+                        result.Title = ac.extractTitle(titleResp.Body, config.RobustTitle)
                     }
                 }
             }
@@ -316,13 +316,13 @@ func (fc *FastHTTPClient) CheckURL(ctx context.Context, rawURL string, config *C
 }
 
 // performVerification does additional verification to prevent false positives
-func (fc *FastHTTPClient) performVerification(ctx context.Context, fullURL string, alreadyGET bool, originalResp *http.Response) (bool, error) {
+func (ac *AliveHTTPClient) performVerification(ctx context.Context, fullURL string, alreadyGET bool, originalResp *http.Response) (bool, error) {
     var resp *http.Response
     var err error
     
     if alreadyGET && originalResp.Body != nil {
         // Try to reuse the already-read body first
-        verified, verifyErr := fc.verifyResponseBody(originalResp)
+        verified, verifyErr := ac.verifyResponseBody(originalResp)
         if verifyErr == nil {
             return verified, nil
         }
@@ -330,17 +330,17 @@ func (fc *FastHTTPClient) performVerification(ctx context.Context, fullURL strin
     }
     
     // Make a fresh GET request for verification
-    resp, err = fc.fetchBody(ctx, fullURL, RequestTypeVerification)
+    resp, err = ac.fetchBody(ctx, fullURL, RequestTypeVerification)
     if err != nil {
         return false, fmt.Errorf("verification_request_failed: %w", err)
     }
     defer resp.Body.Close()
     
-    return fc.verifyResponseBody(resp)
+    return ac.verifyResponseBody(resp)
 }
 
 // verifyResponseBody checks if the response body indicates a false positive
-func (fc *FastHTTPClient) verifyResponseBody(resp *http.Response) (bool, error) {
+func (ac *AliveHTTPClient) verifyResponseBody(resp *http.Response) (bool, error) {
     if resp.Body == nil {
         return true, nil // No body to analyze
     }
@@ -479,15 +479,15 @@ func shouldVerifyResponse(resp *http.Response, config *Config) bool {
 }
 
 // extractTitle extracts the HTML title from response body
-func (fc *FastHTTPClient) extractTitle(body io.Reader, robust bool) string {
+func (ac *AliveHTTPClient) extractTitle(body io.Reader, robust bool) string {
     if robust {
-        return fc.extractTitleRobust(body)
+        return ac.extractTitleRobust(body)
     }
-    return fc.extractTitleFast(body)
+    return ac.extractTitleFast(body)
 }
 
 // extractTitleFast performs fast but less robust title extraction
-func (fc *FastHTTPClient) extractTitleFast(body io.Reader) string {
+func (ac *AliveHTTPClient) extractTitleFast(body io.Reader) string {
     // Fast title extraction - only read first portion
     buffer := make([]byte, TITLE_BODY_SIZE)
     n, _ := body.Read(buffer)
@@ -538,7 +538,7 @@ func (fc *FastHTTPClient) extractTitleFast(body io.Reader) string {
 }
 
 // extractTitleRobust performs robust title extraction using HTML parser
-func (fc *FastHTTPClient) extractTitleRobust(body io.Reader) string {
+func (ac *AliveHTTPClient) extractTitleRobust(body io.Reader) string {
     // Limit reading for performance
     limitedBody := io.LimitReader(body, TITLE_BODY_SIZE)
     
@@ -569,7 +569,7 @@ func (fc *FastHTTPClient) extractTitleRobust(body io.Reader) string {
 }
 
 // processURLs is the main worker function that processes URLs from a channel
-func processURLs(ctx context.Context, urls <-chan string, results chan<- *Result, client *FastHTTPClient, config *Config, stats *Stats, limiter *rate.Limiter) {
+func processURLs(ctx context.Context, urls <-chan string, results chan<- *Result, client *AliveHTTPClient, config *Config, stats *Stats, limiter *rate.Limiter) {
     defer func() {
         if r := recover(); r != nil {
             fmt.Fprintf(os.Stderr, "Worker panic: %v\n", r)
@@ -688,20 +688,22 @@ func outputResult(result *Result, config *Config) {
 }
 
 func main() {
-    // Display help with examples
+    // Display help with examples and branding
     if len(os.Args) > 1 && (os.Args[1] == "-h" || os.Args[1] == "--help") {
-        color.New(color.FgHiCyan).Println("FastHunter v" + VERSION + " - Ultra-fast web discovery")
+        color.New(color.FgHiCyan).Println("AliveHunter v" + VERSION + " - Ultra-fast web discovery")
         color.New(color.FgHiYellow).Println("Optimized for speed with zero false positives")
-        fmt.Println("\nUsage: cat domains.txt | fasthunter [options]")
+        fmt.Println("\nUsage: cat domains.txt | alivehunter [options]")
         fmt.Println("\nModes:")
         fmt.Println("  Default: Perfect balance of speed and accuracy")
         fmt.Println("  -fast:   Maximum speed (minimal verification)")
         fmt.Println("  -verify: Zero false positives guaranteed (slower)")
         fmt.Println("\nExamples:")
-        fmt.Println("  subfinder -d target.com | fasthunter -silent")
-        fmt.Println("  cat domains.txt | fasthunter -fast -title")
-        fmt.Println("  echo 'example.com' | fasthunter -json -verify")
-        fmt.Println("  cat large_list.txt | fasthunter -fast -t 200 -rate 200")
+        fmt.Println("  subfinder -d target.com | alivehunter -silent")
+        fmt.Println("  cat domains.txt | alivehunter -fast -title")
+        fmt.Println("  echo 'example.com' | alivehunter -json -verify")
+        fmt.Println("  cat large_list.txt | alivehunter -fast -t 200 -rate 200")
+        fmt.Println()
+        color.New(color.FgHiGreen).Println("Made with ❤️ by Albert.C")
         fmt.Println()
         return
     }
@@ -815,7 +817,7 @@ func main() {
     urlChan := make(chan string, BATCH_SIZE)
     resultsChan := make(chan *Result, BATCH_SIZE)
     limiter := rate.NewLimiter(rate.Limit(config.Rate), 1)
-    client := NewFastHTTPClient(config)
+    client := NewAliveHTTPClient(config)
 
     // Start progress monitoring
     go displayProgress(ctx, stats, config)
@@ -860,7 +862,7 @@ func main() {
     // Wait for all results to be processed
     <-resultsDone
 
-    // Final statistics
+    // Final statistics with branding
     if !config.Silent {
         fmt.Fprintf(os.Stderr, "\nScan completed: %s\n", stats.String())
         elapsed := time.Since(stats.started)
@@ -873,6 +875,9 @@ func main() {
             successRate := float64(alive) / float64(checked) * 100
             fmt.Fprintf(os.Stderr, "Success rate: %.1f%%\n", successRate)
         }
+        
+        // Signature
+        color.New(color.FgHiGreen).Fprintf(os.Stderr, "\nMade with ❤️ by Albert.C\n")
     }
 }
 
